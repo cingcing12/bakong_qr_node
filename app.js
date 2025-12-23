@@ -4,7 +4,6 @@ const http = require("http");
 const axios = require("axios");
 const { Server } = require("socket.io");
 const { BakongKHQR, khqrData, MerchantInfo } = require("bakong-khqr");
-const jwt = require("jsonwebtoken"); 
 require("dotenv").config();
 
 const app = express();
@@ -16,81 +15,64 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 console.log("\n🚀 STARTING SERVER...");
 
-// --- 1. CONFIGURATION ---
+// --- 1. CONFIGURATION (LOAD FROM RENDER) ---
+// We trust Render variables 100% now. No defaults.
 const TOKEN = process.env.BAKONG_TOKEN;
+const MERCHANT_ID = process.env.BAKONG_MERCHANT_ID; 
 const API_URL = process.env.BAKONG_API_URL || "https://api-bakong.nbc.gov.kh/v1/check_transaction_by_md5";
 
-// PRIORITY 1: Use Manual ID from Render (Safe)
-// PRIORITY 2: Use Tutorial ID (Fails 403, but generates QR)
-let ACTIVE_MERCHANT_ID = process.env.BAKONG_MERCHANT_ID || "sokpheak_vong@bkrt";
-
-// LOGGING FOR DEBUGGING
-if (!TOKEN) {
-    console.error("❌ FATAL: BAKONG_TOKEN is missing!");
-} else {
-    // We log the Token ID just for your info, but we won't force-use it if it breaks things
-    try {
-        const decoded = jwt.decode(TOKEN);
-        if (decoded && decoded.data && decoded.data.id) {
-            console.log(`ℹ️  ID found in Token: [ ${decoded.data.id} ]`);
-            
-            // OPTIONAL: Only switch to Token ID if user didn't set a manual one
-            if (!process.env.BAKONG_MERCHANT_ID) {
-                 console.log("⚠️ No Manual ID set. Trying Token ID...");
-                 ACTIVE_MERCHANT_ID = decoded.data.id;
-            }
-        }
-    } catch (e) { console.error("⚠️ Token decode error."); }
+// Startup Check
+if (!TOKEN || !MERCHANT_ID) {
+    console.error("❌ FATAL ERROR: Missing Variables in Render!");
+    console.error("   - BAKONG_TOKEN: " + (TOKEN ? "✅ Set" : "❌ Missing"));
+    console.error("   - BAKONG_MERCHANT_ID: " + (MERCHANT_ID ? "✅ Set" : "❌ Missing"));
+    process.exit(1); // Stop server if config is wrong
 }
 
-console.log(`✅ USING MERCHANT ID: [ ${ACTIVE_MERCHANT_ID} ]`);
+console.log(`✅ Using Merchant ID: [ ${MERCHANT_ID} ]`);
 
 // 2. Generate QR Code
 app.post("/api/generate-qr", (req, res) => {
     try {
         const amount = 500;
         const billNumber = "#" + Date.now().toString().slice(-6);
-        const expireTime = Date.now() + 5 * 60 * 1000; 
+        const expireTime = Date.now() + 5 * 60 * 1000; // 5 mins
 
-        // DEBUG: Log inputs to see why library might fail
-        console.log(`\n⚙️ Generating QR for: ${ACTIVE_MERCHANT_ID}`);
+        const optionalData = {
+            currency: khqrData.currency.khr,
+            amount: amount,
+            billNumber: billNumber,
+            mobileNumber: "85512345678",
+            storeLabel: "My Store",
+            terminalLabel: "POS 001",
+            expirationTimestamp: expireTime,
+        };
 
         const merchantInfo = new MerchantInfo(
-            ACTIVE_MERCHANT_ID, 
+            MERCHANT_ID, // Uses your real ID from Render
             "My Store", 
             "Phnom Penh", 
             "MERCHANT001", 
             "DEV_BANK", 
-            {
-                currency: khqrData.currency.khr,
-                amount: amount,
-                billNumber: billNumber,
-                mobileNumber: "85512345678",
-                storeLabel: "My Store",
-                terminalLabel: "POS 001",
-                expirationTimestamp: expireTime,
-            }
+            optionalData
         );
 
         const khqr = new BakongKHQR();
         const response = khqr.generateMerchant(merchantInfo);
 
-        // ERROR TRAPPING
         if (!response || !response.data) {
-            console.error("❌ KHQR FAILED. Library returned null.");
-            console.error("   Reason: The Merchant ID might be invalid format.");
-            console.error(`   Bad ID: "${ACTIVE_MERCHANT_ID}"`);
-            return res.status(500).json({ error: "Invalid Merchant ID format" });
+            console.error("❌ QR Gen Failed: Library returned null");
+            return res.status(500).json({ error: "QR Generation Failed" });
         }
 
         const { qr: qrString, md5 } = response.data;
-        console.log(`✅ QR CREATED! Bill: ${billNumber}`);
+        console.log(`\n✅ QR Generated | Bill: ${billNumber}`);
 
         res.json({ qrString, md5, billNumber, expireTime });
 
     } catch (error) {
-        console.error("❌ CRITICAL ERROR:", error);
-        res.status(500).json({ error: error.message });
+        console.error("❌ Generator Error:", error.message);
+        res.status(500).json({ error: "Server Error" });
     }
 });
 
@@ -103,7 +85,7 @@ app.post("/api/check-status", async (req, res) => {
             { md5: md5 }, 
             {
                 headers: {
-                    'Authorization': `Bearer ${TOKEN ? TOKEN.trim() : ''}`,
+                    'Authorization': `Bearer ${TOKEN.trim()}`,
                     'Content-Type': 'application/json'
                 }
             }
@@ -114,15 +96,22 @@ app.post("/api/check-status", async (req, res) => {
             io.emit("payment-success", { md5, billNumber: "Paid" });
             return res.json({ status: "success" });
         } 
+        
         return res.json({ status: "pending" });
 
     } catch (error) {
+        // Ignore "Not Found" errors (User hasn't paid yet)
         if (error.response && error.response.data && error.response.data.errorCode === 15) {
             return res.json({ status: "pending" });
         }
+
+        // Log real errors
+        console.error(`❌ API Error: ${error.response ? error.response.status : error.message}`);
+        
         if (error.response && error.response.status === 403) {
-            console.error(`⚠️ 403 FORBIDDEN: Token cannot check ID: ${ACTIVE_MERCHANT_ID}`);
+            console.error(`⚠️ 403 Forbidden: ID Mismatch. Check Render Variables.`);
         }
+
         return res.json({ status: "pending" });
     }
 });
