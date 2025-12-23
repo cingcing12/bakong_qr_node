@@ -1,0 +1,25 @@
+{
+  "dependencies": {
+    "@types/bakong-khqr": "^1.0.1",
+    "axios": "^1.13.2",
+    "bakong-khqr": "^1.0.20",
+    "cors": "^2.8.5",
+    "crc": "^4.3.2",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "node-fetch": "^2.7.0",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.8.2"
+  },
+  "name": "payment-qr",
+  "version": "1.0.0",
+  "description": "",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node app.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
