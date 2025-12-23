@@ -4,6 +4,8 @@ const http = require("http");
 const axios = require("axios");
 const { Server } = require("socket.io");
 const { BakongKHQR, khqrData, MerchantInfo } = require("bakong-khqr");
+const jwt = require("jsonwebtoken"); 
+require("dotenv").config();
 
 const app = express();
 app.use(cors());
@@ -12,92 +14,118 @@ app.use(express.json());
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
-// --- CONFIGURATION ---
-const BAKONG_TOKEN = process.env.BAKONG_TOKEN;
+console.log("\n🚀 STARTING SERVER...");
 
-// 🏆 CORRECT ENDPOINT FROM YOUR PDF
-const BAKONG_API_URL = process.env.BAKONG_API_URL; 
+// --- 1. CONFIGURATION ---
+const TOKEN = process.env.BAKONG_TOKEN;
+const API_URL = process.env.BAKONG_API_URL || "https://api-bakong.nbc.gov.kh/v1/check_transaction_by_md5";
 
-// 1. Generate QR Code
+// PRIORITY 1: Use Manual ID from Render (Safe)
+// PRIORITY 2: Use Tutorial ID (Fails 403, but generates QR)
+let ACTIVE_MERCHANT_ID = process.env.BAKONG_MERCHANT_ID || "sokpheak_vong@bkrt";
+
+// LOGGING FOR DEBUGGING
+if (!TOKEN) {
+    console.error("❌ FATAL: BAKONG_TOKEN is missing!");
+} else {
+    // We log the Token ID just for your info, but we won't force-use it if it breaks things
+    try {
+        const decoded = jwt.decode(TOKEN);
+        if (decoded && decoded.data && decoded.data.id) {
+            console.log(`ℹ️  ID found in Token: [ ${decoded.data.id} ]`);
+            
+            // OPTIONAL: Only switch to Token ID if user didn't set a manual one
+            if (!process.env.BAKONG_MERCHANT_ID) {
+                 console.log("⚠️ No Manual ID set. Trying Token ID...");
+                 ACTIVE_MERCHANT_ID = decoded.data.id;
+            }
+        }
+    } catch (e) { console.error("⚠️ Token decode error."); }
+}
+
+console.log(`✅ USING MERCHANT ID: [ ${ACTIVE_MERCHANT_ID} ]`);
+
+// 2. Generate QR Code
 app.post("/api/generate-qr", (req, res) => {
     try {
         const amount = 500;
         const billNumber = "#" + Date.now().toString().slice(-6);
         const expireTime = Date.now() + 5 * 60 * 1000; 
 
-        const optionalData = {
-            currency: khqrData.currency.khr,
-            amount: amount,
-            billNumber: billNumber,
-            mobileNumber: "85512345678",
-            storeLabel: "Sokpheak Store",
-            terminalLabel: "POS 001",
-            expirationTimestamp: expireTime,
-        };
+        // DEBUG: Log inputs to see why library might fail
+        console.log(`\n⚙️ Generating QR for: ${ACTIVE_MERCHANT_ID}`);
 
         const merchantInfo = new MerchantInfo(
-            "sokpheak_vong@bkrt", "Sokpheak Store", "Phnom Penh", 
-            "MERCHANT001", "DEV_BANK", optionalData
+            ACTIVE_MERCHANT_ID, 
+            "My Store", 
+            "Phnom Penh", 
+            "MERCHANT001", 
+            "DEV_BANK", 
+            {
+                currency: khqrData.currency.khr,
+                amount: amount,
+                billNumber: billNumber,
+                mobileNumber: "85512345678",
+                storeLabel: "My Store",
+                terminalLabel: "POS 001",
+                expirationTimestamp: expireTime,
+            }
         );
 
         const khqr = new BakongKHQR();
         const response = khqr.generateMerchant(merchantInfo);
 
-        if (!response || !response.data) return res.status(500).json({ error: "Failed" });
+        // ERROR TRAPPING
+        if (!response || !response.data) {
+            console.error("❌ KHQR FAILED. Library returned null.");
+            console.error("   Reason: The Merchant ID might be invalid format.");
+            console.error(`   Bad ID: "${ACTIVE_MERCHANT_ID}"`);
+            return res.status(500).json({ error: "Invalid Merchant ID format" });
+        }
 
         const { qr: qrString, md5 } = response.data;
-
-        console.log(`\n✅ NEW QR GENERATED`);
-        console.log(`🧾 Bill: ${billNumber}`);
-        console.log(`🔑 MD5: ${md5}`);
+        console.log(`✅ QR CREATED! Bill: ${billNumber}`);
 
         res.json({ qrString, md5, billNumber, expireTime });
 
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: "Server Error" });
+        console.error("❌ CRITICAL ERROR:", error);
+        res.status(500).json({ error: error.message });
     }
 });
 
-// 2. Check Status (Using Correct Endpoint & Key)
+// 3. Check Status
 app.post("/api/check-status", async (req, res) => {
     const { md5 } = req.body;
-
     try {
-        // ALWAYS ask Bakong using the correct endpoint
         const response = await axios.post(
-            BAKONG_API_URL,
-            { md5: md5 }, // ⚠️ The doc says the key MUST be "md5"
+            API_URL,
+            { md5: md5 }, 
             {
                 headers: {
-                    'Authorization': `Bearer ${BAKONG_TOKEN}`,
+                    'Authorization': `Bearer ${TOKEN ? TOKEN.trim() : ''}`,
                     'Content-Type': 'application/json'
                 }
             }
         );
 
-        // Debug Log: See exactly what Bakong answers
-        // console.log("Bakong Reply:", response.data);
-
-        // Success Case (Response Code 0 means Success)
         if (response.data && response.data.responseCode === 0) {
-            console.log(`\n🎉 SUCCESS! Payment Verified for: ${md5}`);
+            console.log(`\n🎉 SUCCESS! Payment Verified: ${md5}`);
             io.emit("payment-success", { md5, billNumber: "Paid" });
             return res.json({ status: "success" });
         } 
-        
         return res.json({ status: "pending" });
 
     } catch (error) {
-        // Handle "Not Found" error gracefully (user hasn't paid yet)
         if (error.response && error.response.data && error.response.data.errorCode === 15) {
             return res.json({ status: "pending" });
         }
-
-        console.log(`\n❌ API Error: ${error.response ? error.response.status : error.message}`);
+        if (error.response && error.response.status === 403) {
+            console.error(`⚠️ 403 FORBIDDEN: Token cannot check ID: ${ACTIVE_MERCHANT_ID}`);
+        }
         return res.json({ status: "pending" });
     }
 });
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));

@@ -31,8 +31,16 @@
     </div>
 
     <script>
-        const API = "https://bakong-qr-node.onrender.com/api";
-        const socket = io("https://bakong-qr-node.onrender.com");
+        // Uncomment the one you are currently using:
+
+// FOR LOCALHOST TESTING:
+// const API_URL = "http://localhost:3000"; 
+
+// FOR RENDER HOSTING:
+const API_URL = "https://bakong-qr-node.onrender.com"; 
+
+const API = `${API_URL}/api`;
+const socket = io(API_URL);
         let currentHash = "";
         let pollTimer = null;
 
