@@ -13,10 +13,10 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
 // --- CONFIGURATION ---
-const BAKONG_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiMTgxMTVhM2M2MjUxNDhiZiJ9LCJpYXQiOjE3NjY0NTQyNjMsImV4cCI6MTc3NDIzMDI2M30.K2HHJNf6CuAuSQmrJ0l6-yFTBL6IbXFQOF_NI0DV0WU";
+const BAKONG_TOKEN = process.env.BAKONG_TOKEN;
 
 // 🏆 CORRECT ENDPOINT FROM YOUR PDF
-const BAKONG_API_URL = "https://api-bakong.nbc.gov.kh/v1/check_transaction_by_md5"; 
+const BAKONG_API_URL = process.env.BAKONG_API_URL; 
 
 // 1. Generate QR Code
 app.post("/api/generate-qr", (req, res) => {
