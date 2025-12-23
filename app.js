@@ -5,6 +5,7 @@ const axios = require("axios");
 const { Server } = require("socket.io");
 const { BakongKHQR, khqrData, MerchantInfo } = require("bakong-khqr");
 require("dotenv").config();
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -12,13 +13,32 @@ app.use(express.json());
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
+// --- 1. SAFETY CHECK (RUNS ON STARTUP) ---
+console.log("\n🚀 STARTING SERVER...");
+console.log("---------------------------------------------------");
+if (!process.env.BAKONG_TOKEN) {
+    console.error("❌ FATAL ERROR: BAKONG_TOKEN is missing from Environment Variables!");
+    console.error("👉 Go to Render Dashboard -> Environment -> Add BAKONG_TOKEN");
+} else {
+    const token = process.env.BAKONG_TOKEN;
+    console.log("✅ BAKONG_TOKEN Loaded.");
+    console.log(`🔍 Token Length: ${token.length} chars`);
+    console.log(`👀 First 10 chars: ${token.substring(0, 10)}...`);
+    
+    // Check for invisible spaces
+    if (token.trim() !== token) {
+        console.error("⚠️ WARNING: Your token has hidden spaces at the start or end! Please remove them in Render.");
+    }
+}
+console.log("---------------------------------------------------");
+
+
 // --- CONFIGURATION ---
-const BAKONG_TOKEN = process.env.BAKONG_TOKEN;
+// Use defaults if variables are missing to prevent crashes, but warn user
+const BAKONG_API_URL = process.env.BAKONG_API_URL || "https://api-bakong.nbc.gov.kh/v1/check_transaction_by_md5";
+const MERCHANT_ID = process.env.BAKONG_MERCHANT_ID || "sokpheak_vong@bkrt"; 
 
-// 🏆 CORRECT ENDPOINT FROM YOUR PDF
-const BAKONG_API_URL = process.env.BAKONG_API_URL;
-
-// 1. Generate QR Code
+// 2. Generate QR Code Route
 app.post("/api/generate-qr", (req, res) => {
     try {
         const amount = 500;
@@ -36,52 +56,55 @@ app.post("/api/generate-qr", (req, res) => {
         };
 
         const merchantInfo = new MerchantInfo(
-            process.env.BAKONG_MERCHANT_ID, "Sokpheak Store", "Phnom Penh", 
-            "MERCHANT001", "DEV_BANK", optionalData
+            MERCHANT_ID, 
+            "Sokpheak Store", 
+            "Phnom Penh", 
+            "MERCHANT001", 
+            "DEV_BANK", 
+            optionalData
         );
 
         const khqr = new BakongKHQR();
         const response = khqr.generateMerchant(merchantInfo);
 
-        if (!response || !response.data) return res.status(500).json({ error: "Failed" });
+        if (!response || !response.data) return res.status(500).json({ error: "Failed to generate QR" });
 
         const { qr: qrString, md5 } = response.data;
 
-        console.log(`\n✅ NEW QR GENERATED`);
-        console.log(`🧾 Bill: ${billNumber}`);
-        console.log(`🔑 MD5: ${md5}`);
+        console.log(`\n✅ QR GENERATED | Bill: ${billNumber} | MD5: ${md5}`);
 
         res.json({ qrString, md5, billNumber, expireTime });
 
     } catch (error) {
-        console.error(error);
+        console.error("QR Gen Error:", error.message);
         res.status(500).json({ error: "Server Error" });
     }
 });
 
-// 2. Check Status (Using Correct Endpoint & Key)
+// 3. Check Status Route
 app.post("/api/check-status", async (req, res) => {
     const { md5 } = req.body;
 
+    // Fail fast if token is missing
+    if (!process.env.BAKONG_TOKEN) {
+        console.error("❌ Cannot check status: Token is missing!");
+        return res.status(500).json({ status: "error", message: "Server misconfigured" });
+    }
+
     try {
-        // ALWAYS ask Bakong using the correct endpoint
         const response = await axios.post(
             BAKONG_API_URL,
-            { md5: md5 }, // ⚠️ The doc says the key MUST be "md5"
+            { md5: md5 }, 
             {
                 headers: {
-                    'Authorization': `Bearer ${BAKONG_TOKEN}`,
+                    'Authorization': `Bearer ${process.env.BAKONG_TOKEN.trim()}`, // .trim() removes accidental spaces
                     'Content-Type': 'application/json'
                 }
             }
         );
 
-        // Debug Log: See exactly what Bakong answers
-        // console.log("Bakong Reply:", response.data);
-
-        // Success Case (Response Code 0 means Success)
         if (response.data && response.data.responseCode === 0) {
-            console.log(`\n🎉 SUCCESS! Payment Verified for: ${md5}`);
+            console.log(`\n🎉 SUCCESS! Payment Verified: ${md5}`);
             io.emit("payment-success", { md5, billNumber: "Paid" });
             return res.json({ status: "success" });
         } 
@@ -89,15 +112,21 @@ app.post("/api/check-status", async (req, res) => {
         return res.json({ status: "pending" });
 
     } catch (error) {
-        // Handle "Not Found" error gracefully (user hasn't paid yet)
+        // Handle "Not Found" / Code 15 (Not paid yet)
         if (error.response && error.response.data && error.response.data.errorCode === 15) {
             return res.json({ status: "pending" });
         }
 
-        console.log(`\n❌ API Error: ${error.response ? error.response.status : error.message}`);
+        // Log actual errors (401, 403, 500)
+        console.error(`❌ API Error: ${error.response ? error.response.status : error.message}`);
+        
+        if (error.response && error.response.status === 403) {
+            console.error("⚠️ HINT: 403 means your Token is invalid, expired, or blocked.");
+        }
+
         return res.json({ status: "pending" });
     }
 });
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
