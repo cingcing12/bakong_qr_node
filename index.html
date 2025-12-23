@@ -87,7 +87,13 @@ console.log("API:", API_URL);
 /* ───────── SOCKET (SAFE) ───────── */
 let socket = null;
 try {
-  socket = io(API_URL, { timeout: 3000 });
+  const socket = io(API_URL, {
+  path: "/socket.io",
+  transports: ["websocket"],
+  secure: true,
+  reconnection: true,
+  rejectUnauthorized: false // sometimes needed on Render
+});
 } catch (e) {
   console.warn("Socket disabled");
 }
