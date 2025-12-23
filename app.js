@@ -19,18 +19,14 @@ console.log("\n🚀 STARTING SERVER...");
 const TOKEN = process.env.BAKONG_TOKEN;
 const API_URL = process.env.BAKONG_API_URL || "https://api-bakong.nbc.gov.kh/v1/check_transaction_by_md5";
 
-// Load ID from Env
-let MERCHANT_ID = process.env.BAKONG_MERCHANT_ID;
+// TRUST RENDER 100% (No auto-reset logic)
+const MERCHANT_ID = process.env.BAKONG_MERCHANT_ID;
 
-// 🛡️ CRASH PROTECTION: Check if ID is valid
-// The library fails if ID is a UUID (no '@' symbol or too long/random)
-if (!MERCHANT_ID || MERCHANT_ID.length > 20 || !MERCHANT_ID.includes("@")) {
-    console.warn("⚠️ WARNING: Your BAKONG_MERCHANT_ID looks invalid (it might be a UUID).");
-    console.warn("   - You provided: " + MERCHANT_ID);
-    console.warn("   - Resetting to default 'sokpheak_vong@bkrt' to prevent crash.");
-    
-    // Fallback to prevent "returned null" error
-    MERCHANT_ID = "sokpheak_vong@bkrt"; 
+if (!TOKEN || !MERCHANT_ID) {
+    console.error("❌ FATAL: Missing Variables in Render!");
+    console.error("   - BAKONG_TOKEN: " + (TOKEN ? "✅ Set" : "❌ Missing"));
+    console.error("   - BAKONG_MERCHANT_ID: " + (MERCHANT_ID ? "✅ Set" : "❌ Missing"));
+    // We do NOT exit, we let it try to run so you can see logs
 }
 
 console.log(`✅ Using Merchant ID: [ ${MERCHANT_ID} ]`);
@@ -41,6 +37,8 @@ app.post("/api/generate-qr", (req, res) => {
         const amount = 500;
         const billNumber = "#" + Date.now().toString().slice(-6);
         const expireTime = Date.now() + 5 * 60 * 1000; 
+
+        console.log(`\n⚙️ Generating QR for: ${MERCHANT_ID}`);
 
         const optionalData = {
             currency: khqrData.currency.khr,
@@ -53,7 +51,7 @@ app.post("/api/generate-qr", (req, res) => {
         };
 
         const merchantInfo = new MerchantInfo(
-            MERCHANT_ID, // Use the sanitized ID
+            MERCHANT_ID, // Uses exactly what you put in Render
             "My Store", 
             "Phnom Penh", 
             "MERCHANT001", 
@@ -65,12 +63,14 @@ app.post("/api/generate-qr", (req, res) => {
         const response = khqr.generateMerchant(merchantInfo);
 
         if (!response || !response.data) {
-            console.error("❌ KHQR Library returned null data.");
-            return res.status(500).json({ error: "QR Generation Failed - Invalid Merchant ID" });
+            console.error("❌ KHQR FAILED. Library returned null.");
+            console.error(`   Reason: '${MERCHANT_ID}' is not a valid KHQR ID.`);
+            console.error("   Fix: Use a format like 'username@bank' or '012345678@aba'");
+            return res.status(500).json({ error: "Invalid Merchant ID format" });
         }
 
         const { qr: qrString, md5 } = response.data;
-        console.log(`\n✅ QR Generated | Bill: ${billNumber}`);
+        console.log(`✅ QR CREATED! Bill: ${billNumber}`);
 
         res.json({ qrString, md5, billNumber, expireTime });
 
@@ -111,8 +111,8 @@ app.post("/api/check-status", async (req, res) => {
         console.error(`❌ API Error: ${error.response ? error.response.status : error.message}`);
 
         if (error.response && error.response.status === 403) {
-            console.error(`⚠️ 403 Forbidden: Your Token cannot check bills for ${MERCHANT_ID}`);
-            console.error(`👉 ACTION: You must find the Account ID (username@bkrt) that belongs to your token.`);
+            console.error(`⚠️ 403 Forbidden: ID Mismatch.`);
+            console.error(`   Your Token does not own the Merchant ID: ${MERCHANT_ID}`);
         }
 
         return res.json({ status: "pending" });
