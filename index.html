@@ -87,13 +87,13 @@ console.log("API:", API_URL);
 /* ───────── SOCKET (SAFE) ───────── */
 let socket = null;
 try {
-  const socket = io(API_URL, {
+ const socket = io(API_URL, {
   path: "/socket.io",
-  transports: ["websocket"],
+  transports: ["websocket", "polling"],
   secure: true,
-  reconnection: true,
-  rejectUnauthorized: false // sometimes needed on Render
+  reconnection: true
 });
+
 } catch (e) {
   console.warn("Socket disabled");
 }

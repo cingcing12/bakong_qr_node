@@ -13,12 +13,14 @@ app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, {
+  path: "/socket.io",
   cors: {
     origin: "*", // or your frontend URL
     methods: ["GET", "POST"]
   },
-  transports: ["websocket"] // force websocket
+  transports: ["websocket", "polling"] // fallback to polling if needed
 });
+
 
 
 console.log("\n🚀 STARTING BAKONG KHQR SERVER...");
@@ -127,6 +129,12 @@ app.post("/api/check-status", async (req, res) => {
     return res.json({ status: "pending" });
   }
 });
+
+app.get("/api/test-socket", (req, res) => {
+  io.emit("payment-success", { md5: "test123" });
+  res.send("Socket test emitted");
+});
+
 
 // ───────── SOCKET ─────────
 io.on("connection", () => {
