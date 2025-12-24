@@ -3,10 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <title>Sokpheak POS</title>
+
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+
 <style>
 body { font-family:'Inter',sans-serif; background:#f3f4f6; display:flex; height:100vh; justify-content:center; align-items:center; margin:0; }
 .card { background:white; padding:40px; border-radius:20px; text-align:center; box-shadow:0 10px 30px rgba(0,0,0,0.1); width:320px; }
@@ -17,6 +19,7 @@ body { font-family:'Inter',sans-serif; background:#f3f4f6; display:flex; height:
 @keyframes spin { to { transform:rotate(360deg); } }
 </style>
 </head>
+
 <body>
 
 <div class="card">
@@ -32,94 +35,112 @@ body { font-family:'Inter',sans-serif; background:#f3f4f6; display:flex; height:
 </div>
 
 <script>
-const isLocal = location.hostname==="localhost"||location.hostname==="127.0.0.1";
+const isLocal = ["localhost","127.0.0.1"].includes(location.hostname);
 const API_URL = isLocal ? "http://localhost:3000" : "https://bakong-qr-node.onrender.com";
 const API = `${API_URL}/api`;
 
-// Socket.io
-const socket = io(API_URL, { transports: ["websocket", "polling"], secure:true, reconnection:true });
+const socket = io(API_URL, {
+  transports: ["polling","websocket"],
+  reconnection: true
+});
 
 let currentHash="", pollTimer=null, expireTimer=null, paid=false;
 
 init();
 
-async function init() {
+async function init(){
   reset();
-  try {
-    const res = await fetch(`${API}/generate-qr`, { method:"POST" });
+  try{
+    const res = await fetch(`${API}/generate-qr`, {method:"POST"});
     const data = await res.json();
-    if(!data.qrString||!data.md5) throw new Error("Invalid QR");
+    if(!data.qrString || !data.md5) throw "Invalid QR";
+
     renderQR(data);
+    socket.emit("join-payment", data.md5);
     startPolling(data.md5);
     startExpireCountdown(data.expireTime);
-  } catch(err){ showError("Cannot connect to payment server"); console.error(err);}
+
+  }catch(err){
+    console.error(err);
+    showError("Cannot connect to payment server");
+  }
 }
 
-// Render QR using qrcode-generator (supports long strings)
 function renderQR(data){
-  const qrEl = document.getElementById("qrcode");
-  qrEl.innerHTML = "";
-  
-  const qr = qrcode(0, 'M'); // 0 = automatic type number, 'M' = medium error correction
+  const el = document.getElementById("qrcode");
+  el.innerHTML="";
+
+  const qr = qrcode(0,'M');
   qr.addData(data.qrString);
   qr.make();
-  
-  qrEl.innerHTML = qr.createImgTag(6); // 6 = size multiplier
+
+  el.innerHTML = qr.createImgTag(6);
   currentHash = data.md5;
-  document.getElementById("hashDisplay").innerText = data.md5.slice(0,8) + "...";
+  document.getElementById("hashDisplay").innerText = data.md5.slice(0,10)+"...";
 }
 
-// Poll backend every 3s to check payment status
 function startPolling(md5){
   pollTimer = setInterval(async()=>{
     try{
-      const res = await fetch(`${API}/check-status`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({md5})});
-      if(!res.ok) return;
+      const res = await fetch(`${API}/check-status`,{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({md5})
+      });
       const data = await res.json();
       if(data.status==="success") handleSuccess();
-    }catch{ console.log("Polling..."); }
-  }, 3000);
+    }catch{}
+  },3000);
 }
 
-// Countdown until QR expiration
-function startExpireCountdown(expireTime){
-  const remaining = expireTime - Date.now();
-  if(remaining <= 0) return;
+function startExpireCountdown(expire){
   expireTimer = setTimeout(()=>{
     stopAll();
-    Swal.fire({title:"QR Expired",text:"Generate new QR?",icon:"warning",confirmButtonColor:"#E60000"}).then(init);
-  }, remaining);
+    Swal.fire({
+      title:"QR Expired",
+      icon:"warning",
+      confirmButtonColor:"#E60000"
+    }).then(init);
+  }, expire-Date.now());
 }
 
-// Payment success
 function handleSuccess(){
   if(paid) return;
-  paid = true;
+  paid=true;
   stopAll();
-  const status = document.getElementById("statusText");
-  status.innerHTML = "✅ Payment Successful!";
-  status.style.color = "green";
+
+  const status=document.getElementById("statusText");
+  status.innerHTML="✅ Payment Successful!";
+  status.style.color="green";
+
   new Audio("https://assets.mixkit.co/sfx/preview/mixkit-software-interface-start-2574.mp3").play().catch(()=>{});
-  Swal.fire({title:"Payment Received!",icon:"success",confirmButtonColor:"#E60000"}).then(init);
+  Swal.fire({title:"Payment Received!",icon:"success"}).then(init);
 }
 
-// Helpers
-function stopAll(){ clearInterval(pollTimer); clearTimeout(expireTimer); }
+function stopAll(){
+  clearInterval(pollTimer);
+  clearTimeout(expireTimer);
+}
+
 function reset(){
-  stopAll(); 
-  paid=false; 
-  currentHash=""; 
-  document.getElementById("qrcode").innerHTML=""; 
-  document.getElementById("hashDisplay").innerText="..."; 
-  document.getElementById("statusText").innerHTML='<div class="loader"></div> Waiting for payment...'; 
+  stopAll();
+  paid=false;
+  currentHash="";
+  document.getElementById("qrcode").innerHTML="";
+  document.getElementById("hashDisplay").innerText="...";
+  document.getElementById("statusText").innerHTML='<div class="loader"></div> Waiting for payment...';
   document.getElementById("statusText").style.color="#6b7280";
 }
-function showError(msg){ stopAll(); const status = document.getElementById("statusText"); status.innerHTML="❌ "+msg; status.style.color="red"; }
 
-// Socket listener
+function showError(msg){
+  stopAll();
+  const status=document.getElementById("statusText");
+  status.innerHTML="❌ "+msg;
+  status.style.color="red";
+}
+
 socket.on("payment-success",(data)=>{
-  console.log("Socket event received:", data, "currentHash:", currentHash);
-  if(data.md5 && currentHash && data.md5.startsWith(currentHash.slice(0,8))) handleSuccess();
+  if(data.md5 === currentHash) handleSuccess();
 });
 </script>
 
