@@ -27,7 +27,12 @@ body{font-family:sans-serif;display:flex;justify-content:center;align-items:cent
 </div>
 
 <script>
-const API_URL = "http://localhost:3000"; // Change to your backend URL
+// Detect local vs production
+const isLocal = ["localhost", "127.0.0.1"].includes(location.hostname);
+const API_URL = isLocal 
+  ? "http://localhost:3000" 
+  : "https://bakong-qr-node.onrender.com"; // <-- replace with your actual Render app URL
+
 const socket = io(API_URL, { transports:["polling","websocket"], reconnection:true });
 
 let currentHash="", pollTimer=null, expireTimer=null, paid=false;
