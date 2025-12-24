@@ -3,46 +3,32 @@
 <head>
 <meta charset="UTF-8">
 <title>Sokpheak POS</title>
-
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
-
 <style>
-body { font-family:'Inter',sans-serif; background:#f3f4f6; display:flex; height:100vh; justify-content:center; align-items:center; margin:0; }
-.card { background:white; padding:40px; border-radius:20px; text-align:center; box-shadow:0 10px 30px rgba(0,0,0,0.1); width:320px; }
-.amount { font-size:3rem; font-weight:800; color:#E60000; margin:10px 0; }
-#qrcode { margin:20px auto; display:flex; justify-content:center; }
-.status { margin-top:20px; font-weight:600; color:#6b7280; display:flex; justify-content:center; align-items:center; gap:10px; }
-.loader { width:15px; height:15px; border:2px solid #ccc; border-top-color:#333; border-radius:50%; animation:spin 1s infinite; }
-@keyframes spin { to { transform:rotate(360deg); } }
+body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#f3f4f6;margin:0}
+.card{background:#fff;padding:40px;border-radius:20px;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.1);width:320px}
+.amount{font-size:3rem;font-weight:800;color:#E60000;margin:10px 0}
+#qrcode{margin:20px auto;display:flex;justify-content:center}
+.status{margin-top:20px;font-weight:600;color:#6b7280;display:flex;justify-content:center;align-items:center;gap:10px}
+.loader{width:15px;height:15px;border:2px solid #ccc;border-top-color:#333;border-radius:50%;animation:spin 1s infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
-
 <body>
 
 <div class="card">
   <h2>KHQR Pay</h2>
   <div class="amount">500 ៛</div>
   <div id="qrcode"></div>
-  <div class="status" id="statusText">
-    <div class="loader"></div> Waiting for payment...
-  </div>
-  <p style="font-size:10px;color:#ccc;margin-top:20px">
-    Hash: <span id="hashDisplay">...</span>
-  </p>
+  <div class="status" id="statusText"><div class="loader"></div> Waiting for payment...</div>
+  <p style="font-size:10px;color:#ccc;margin-top:20px">Hash: <span id="hashDisplay">...</span></p>
 </div>
 
 <script>
-const isLocal = ["localhost","127.0.0.1"].includes(location.hostname);
-const API_URL = isLocal ? "http://localhost:3000" : "https://bakong-qr-node.onrender.com";
-const API = `${API_URL}/api`;
-
-const socket = io(API_URL, {
-  transports: ["polling","websocket"],
-  reconnection: true
-});
+const API_URL = "http://localhost:3000"; // Change to your backend URL
+const socket = io(API_URL, { transports:["polling","websocket"], reconnection:true });
 
 let currentHash="", pollTimer=null, expireTimer=null, paid=false;
 
@@ -50,97 +36,76 @@ init();
 
 async function init(){
   reset();
-  try{
-    const res = await fetch(`${API}/generate-qr`, {method:"POST"});
+  try {
+    const res = await fetch(`${API_URL}/api/generate-qr`, { method:"POST" });
     const data = await res.json();
-    if(!data.qrString || !data.md5) throw "Invalid QR";
 
-    renderQR(data);
-    socket.emit("join-payment", data.md5);
-    startPolling(data.md5);
+    renderQR(data.qrString);
+    currentHash = data.md5;
+    document.getElementById("hashDisplay").innerText = currentHash;
+
+    socket.emit("join-payment", currentHash);
+
+    // Auto open Bakong on mobile if deeplink
+    if (/Android|iPhone/i.test(navigator.userAgent) && data.deeplink){
+      window.location.href = data.deeplink;
+    }
+
+    startPolling(currentHash);
     startExpireCountdown(data.expireTime);
-
-  }catch(err){
-    console.error(err);
-    showError("Cannot connect to payment server");
-  }
+  } catch(err){ showError("Cannot generate QR"); console.error(err); }
 }
 
-function renderQR(data){
-  const el = document.getElementById("qrcode");
-  el.innerHTML="";
-
-  const qr = qrcode(0,'M');
-  qr.addData(data.qrString);
+function renderQR(qrString){
+  const qr = qrcode(0,"M");
+  qr.addData(qrString);
   qr.make();
-
-  el.innerHTML = qr.createImgTag(6);
-  currentHash = data.md5;
-  document.getElementById("hashDisplay").innerText = data.md5.slice(0,10)+"...";
+  document.getElementById("qrcode").innerHTML = qr.createImgTag(5);
 }
 
 function startPolling(md5){
   pollTimer = setInterval(async()=>{
+    if(paid) return;
     try{
-      const res = await fetch(`${API}/check-status`,{
+      const r = await fetch(`${API_URL}/api/check-status`,{
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({md5})
+        body:JSON.stringify({ md5 })
       });
-      const data = await res.json();
-      if(data.status==="success") handleSuccess();
+      const d = await r.json();
+      if(d.status==="success") handleSuccess();
     }catch{}
-  },3000);
+  },2000);
 }
 
-function startExpireCountdown(expire){
-  expireTimer = setTimeout(()=>{
-    stopAll();
-    Swal.fire({
-      title:"QR Expired",
-      icon:"warning",
-      confirmButtonColor:"#E60000"
-    }).then(init);
-  }, expire-Date.now());
+function startExpireCountdown(expireTime){
+  const remaining = expireTime - Date.now();
+  if(remaining<=0) return;
+  expireTimer = setTimeout(()=>{ if(!paid){ showError("QR Expired"); setTimeout(init,1500); }}, remaining);
 }
 
 function handleSuccess(){
   if(paid) return;
   paid=true;
-  stopAll();
-
-  const status=document.getElementById("statusText");
-  status.innerHTML="✅ Payment Successful!";
-  status.style.color="green";
-
-  new Audio("https://assets.mixkit.co/sfx/preview/mixkit-software-interface-start-2574.mp3").play().catch(()=>{});
-  Swal.fire({title:"Payment Received!",icon:"success"}).then(init);
-}
-
-function stopAll(){
-  clearInterval(pollTimer);
-  clearTimeout(expireTimer);
+  clearInterval(pollTimer); clearTimeout(expireTimer);
+  document.getElementById("statusText").innerHTML="✅ Payment Successful";
+  Swal.fire({icon:"success",title:"Payment Completed",text:"Thank you!",timer:2000,showConfirmButton:false});
 }
 
 function reset(){
-  stopAll();
-  paid=false;
-  currentHash="";
+  paid=false; clearInterval(pollTimer); clearTimeout(expireTimer);
   document.getElementById("qrcode").innerHTML="";
   document.getElementById("hashDisplay").innerText="...";
   document.getElementById("statusText").innerHTML='<div class="loader"></div> Waiting for payment...';
-  document.getElementById("statusText").style.color="#6b7280";
 }
 
 function showError(msg){
-  stopAll();
-  const status=document.getElementById("statusText");
-  status.innerHTML="❌ "+msg;
-  status.style.color="red";
+  document.getElementById("statusText").innerHTML="❌ "+msg;
+  document.getElementById("statusText").style.color="red";
 }
 
-socket.on("payment-success",(data)=>{
-  if(data.md5 === currentHash) handleSuccess();
+socket.on("payment-success", (data)=>{
+  if(data.md5===currentHash) handleSuccess();
 });
 </script>
 

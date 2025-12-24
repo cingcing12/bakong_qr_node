@@ -1,11 +1,10 @@
 require("dotenv").config();
-
 const express = require("express");
 const cors = require("cors");
 const http = require("http");
 const axios = require("axios");
 const { Server } = require("socket.io");
-const { BakongKHQR, khqrData, MerchantInfo } = require("bakong-khqr");
+const { BakongKHQR, khqrData, IndividualInfo, MerchantInfo } = require("bakong-khqr");
 
 const app = express();
 app.use(cors());
@@ -13,96 +12,103 @@ app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*" }, // allow all origins
-  transports: ["websocket"], // force websocket for HTTPS
+  cors: { origin: "*" },
+  transports: ["polling","websocket"]
 });
 
-console.log("🚀 STARTING BAKONG KHQR SERVER...");
-
-const TOKEN = process.env.BAKONG_TOKEN?.trim() || null;
-const MERCHANT_ID = process.env.BAKONG_MERCHANT_ID || null;
-const API_URL =
-  process.env.BAKONG_API_URL || "https://api-bakong.nbc.gov.kh/v1/check_transaction_by_md5";
+const TOKEN = process.env.BAKONG_TOKEN?.trim();
+const MERCHANT_ID = process.env.BAKONG_MERCHANT_ID?.trim();
+const CHECK_API = "https://api-bakong.nbc.gov.kh/v1/check_transaction_by_md5";
 
 const BAKONG_ENABLED = !!(TOKEN && MERCHANT_ID);
 console.log("🔐 Bakong Enabled:", BAKONG_ENABLED);
 
-// Health check
-app.get("/", (req, res) => {
-  res.json({ status: "ok", bakongEnabled: BAKONG_ENABLED });
+/* ================= SOCKET ================= */
+io.on("connection", (socket) => {
+  console.log("🔌 Client connected");
+  socket.on("join-payment", (md5) => {
+    socket.join(md5);
+  });
+  socket.on("disconnect", () => console.log("❌ Client disconnected"));
 });
 
-// Generate QR
-app.post("/api/generate-qr", (req, res) => {
+/* ================= GENERATE QR + DEEPLINK ================= */
+app.post("/api/generate-qr", async (req, res) => {
   try {
     const amount = 500;
-    const billNumber = "INV-" + Date.now();
-    const expireTime = Date.now() + 5 * 60 * 1000;
+    const expireTime = Date.now() + 5*60*1000;
+    const billNumber = "INV-"+Date.now();
 
-    const merchantInfo = new MerchantInfo(
-      MERCHANT_ID || "DEV_MERCHANT",
-      "My Store",
+    // Generate KHQR string
+    const optionalData = {
+      currency: khqrData.currency.khr,
+      amount,
+      billNumber,
+      storeLabel: "Vong Sokpheak",
+      terminalLabel: "Pheak Terminal",
+      expirationTimestamp: expireTime
+    };
+
+    const individualInfo = new IndividualInfo(
+      "sokpheak_vong@bkrt",
+      "Vong Sokpheak",
       "Phnom Penh",
-      "POS001",
-      "DEV_BANK",
-      {
-        currency: khqrData.currency.khr,
-        amount,
-        billNumber,
-        storeLabel: "My Store",
-        terminalLabel: "POS001",
-        expirationTimestamp: expireTime,
-      }
+      optionalData
     );
 
     const khqr = new BakongKHQR();
-    const result = khqr.generateMerchant(merchantInfo);
+    const response = khqr.generateIndividual(individualInfo);
 
-    if (!result?.data) return res.status(500).json({ error: "KHQR generation failed" });
+    if (response.status.code !== 0) throw new Error(response.status.message);
 
-    const { qr, md5 } = result.data;
-    res.json({ qrString: qr, md5, billNumber, expireTime, bakongEnabled: BAKONG_ENABLED });
-  } catch (err) {
-    console.error("❌ QR ERROR:", err.message);
-    res.status(500).json({ error: "Server error" });
+    const KHQRString = response.data.qr;
+    const md5 = response.data.md5;
+
+    // Generate deep link via Bakong API
+    const sourceInfo = {
+      appIconUrl: "https://yourwebsite.com/logo.png",
+      appName: "Pheak App",
+      appDeepLinkCallback: "https://bakong-qr-node.onrender.com" // change in production
+    };
+
+    const dlRes = await axios.post(
+      "https://api-bakong.nbc.gov.kh/v1/generate_deeplink_by_qr",
+      { qr: KHQRString, sourceInfo },
+      { headers: { "Content-Type":"application/json" } }
+    );
+
+    const deeplink = dlRes.data?.data?.shortLink || null;
+
+    res.json({ qrString: KHQRString, md5, deeplink, expireTime });
+  } catch(err) {
+    console.error(err);
+    res.status(500).json({ error: "QR generation failed" });
   }
 });
 
-// Check payment status
-app.post("/api/check-status", async (req, res) => {
+/* ================= CHECK PAYMENT ================= */
+app.post("/api/check-status", async (req,res) => {
   if (!BAKONG_ENABLED) return res.json({ status: "pending" });
 
   const { md5 } = req.body;
   if (!md5) return res.status(400).json({ error: "md5 required" });
 
   try {
-    const response = await axios.post(
-      API_URL,
+    const r = await axios.post(
+      CHECK_API,
       { md5, merchantId: MERCHANT_ID },
-      { headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" }, timeout: 10000 }
+      { headers: { Authorization: `Bearer ${TOKEN}` }, timeout: 10000 }
     );
 
-    if (response.data?.responseCode === 0) {
-      io.sockets.emit("payment-success", { md5 }); // emit to all clients
+    if (r.data?.responseCode === 0) {
+      io.to(md5).emit("payment-success", { md5 });
       return res.json({ status: "success" });
     }
 
-    return res.json({ status: "pending" });
-  } catch (err) {
-    return res.json({ status: "pending" });
+    res.json({ status: "pending" });
+  } catch(err) {
+    res.json({ status: "pending" });
   }
-});
-
-// Test socket (debug only)
-app.get("/api/test-socket", (req, res) => {
-  io.sockets.emit("payment-success", { md5: "test123" });
-  res.send("Socket test emitted");
-});
-
-// Socket connection
-io.on("connection", (socket) => {
-  console.log("🔌 Client connected");
-  socket.on("disconnect", () => console.log("Client disconnected"));
 });
 
 const PORT = process.env.PORT || 3000;
