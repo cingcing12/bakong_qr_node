@@ -28,10 +28,7 @@ body{font-family:sans-serif;display:flex;justify-content:center;align-items:cent
 
 <script>
 // Detect local vs production
-const isLocal = ["localhost", "127.0.0.1"].includes(location.hostname);
-const API_URL = isLocal 
-  ? "http://localhost:3000" 
-  : "https://bakong-qr-node.onrender.com"; // <-- replace with your actual Render app URL
+const API_URL = "https://tutto-joyously-alayna.ngrok-free.dev";
 
 const socket = io(API_URL, { transports:["polling","websocket"], reconnection:true });
 
